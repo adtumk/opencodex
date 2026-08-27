@@ -404,6 +404,14 @@ export function httpStatusFromTerminalError(error: {
   ) return 403;
   if (error.type === "insufficient_quota" || error.code === "insufficient_quota") return 429;
   if (error.type === "server_error" && error.code === "server_is_overloaded") return 503;
+  // A structured generic upstream/server classification outranks message inference.
+  // classifyError assigns `server_error` + `upstream_server_error` to every 5xx it sees,
+  // so the class is authoritative: the provider already told us this was a server failure.
+  // Falling through to the message heuristics below inverts that, because an upstream 500
+  // whose text happens to contain "malformed" or "invalid request" is read as a client
+  // error and returns 400. Claude Code then stops retrying a failure that was retryable,
+  // and the caller sees invalid_request_error for an upstream outage.
+  if (error.type === "server_error" || error.code === "upstream_server_error") return 502;
   // Client-closed messages often arrive as invalid_request_error after classifyError; check message
   // before treating every invalid_request_error as HTTP 400.
   const message = error.message ?? "";

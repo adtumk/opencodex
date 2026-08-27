@@ -607,6 +607,38 @@ describe("claude outbound SSE", () => {
     });
   });
 
+  // Deriving the status from the classified payload is only safe if a STRUCTURED server
+  // class outranks the message heuristics. `httpStatusFromTerminalError` recognized only
+  // `server_error` + `server_is_overloaded`, so a generic `upstream_server_error` fell
+  // through to `inferHttpStatusFromAdapterMessage`. An upstream 5xx whose text happens to
+  // contain "malformed" or "invalid request" then returned 400, and Claude Code stopped
+  // retrying a genuinely retryable upstream failure — the exact inversion this PR set out
+  // to fix, reintroduced one layer down. classifyError assigns `upstream_server_error` to
+  // every 5xx it sees, so the class is authoritative over the words in the message.
+  test("generic upstream_server_error with client-sounding text stays a transient server failure", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.failed", {
+        response: {
+          status: "failed",
+          error: {
+            type: "server_error",
+            code: "upstream_server_error",
+            message: "upstream stream produced malformed tool call arguments",
+          },
+        },
+      }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.at(-1)!.data).toEqual({
+      type: "error",
+      error: {
+        type: "overloaded_error",
+        message: "upstream stream produced malformed tool call arguments",
+      },
+    });
+  });
+
   test("internal reader exception stays api_error (not promoted to overloaded)", async () => {
     const boom = new ReadableStream<Uint8Array>({
       start(controller) {
