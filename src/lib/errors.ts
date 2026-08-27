@@ -335,6 +335,12 @@ export function inferHttpStatusFromAdapterMessage(message: string): number {
   // subscription/permission wording.
   if (isAuthenticationMessage(lower)) return 401;
   if (isSubscriptionGateMessage(lower) || isPermissionMessage(lower)) return 403;
+  // Same precedence rule as classifyCursorError: an explicit gRPC FAILED_PRECONDITION is a
+  // structured, deterministic rejection, so it outranks the overload keywords that routinely
+  // appear beside it ("failed_precondition: model unavailable for this plan"). Without this,
+  // the message matched "unavailable" and returned a retryable 503, so clients kept retrying
+  // a rejection that can never succeed.
+  if (lower.includes("failed_precondition") || lower.includes("failed precondition")) return 400;
   if (
     lower.includes("unavailable") ||
     lower.includes("overloaded") ||

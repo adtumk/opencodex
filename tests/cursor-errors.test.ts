@@ -69,6 +69,30 @@ describe("classifyCursorError", () => {
     expect(inferHttpStatusFromAdapterMessage("Cursor invalid request: Cursor Connect error failed_precondition: Error")).toBe(400);
   });
 
+  test("failed_precondition wins over overload keywords in the same message", () => {
+    // The original arm sat AFTER the overload keywords, so the shape this branch exists
+    // to catch slipped straight past it: a plan-gated rejection normally reads
+    // "failed_precondition: model unavailable for this plan", which matched "unavailable"
+    // first and came back "Cursor server overloaded" -> 503. Clients then retried a
+    // deterministic rejection forever. The explicit gRPC status is a structured signal
+    // from the backend; "unavailable" and "temporarily" here are just words near it.
+    expect(classifyCursorError("failed_precondition: model unavailable for this plan"))
+      .toBe("Cursor invalid request");
+    expect(classifyCursorError("failed_precondition: model temporarily gated"))
+      .toBe("Cursor invalid request");
+    expect(inferHttpStatusFromAdapterMessage("Cursor invalid request: failed_precondition: model unavailable for this plan"))
+      .toBe(400);
+
+    // A real overload with no gRPC precondition code must still be retryable.
+    expect(classifyCursorError("service temporarily unavailable")).toBe("Cursor server overloaded");
+    expect(classifyCursorError("backend overloaded, retry")).toBe("Cursor server overloaded");
+    expect(classifyCursorError("server is busy")).toBe("Cursor server overloaded");
+
+    // Authentication is checked earlier and stays authoritative over both.
+    expect(classifyCursorError("failed_precondition: unauthorized token"))
+      .toBe("Cursor authentication failed");
+  });
+
   test("timeout / deadline", () => {
     expect(classifyCursorError("Cursor transport timed out before first response")).toBe("Cursor request timed out");
     expect(classifyCursorError("deadline exceeded")).toBe("Cursor request timed out");
