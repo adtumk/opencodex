@@ -16,10 +16,12 @@ tail exists:
   Never mutate pushed objects: push() has no ownership/copy contract
   (run-turn-queue.ts:7-11) and adapters may retain/re-emit event objects —
   interface-level alias safety, so replacement only (A-gate blocker 6).
-- Byte bound (A-gate blocker 5): merge only while tail.text.length <= 64KB;
-  past that, append as a new item so a single merged item cannot grow
-  unbounded and re-copy on every push. The backlog cap then bounds total
-  memory at ~64KB * 1024.
+- Coalescing threshold (A-gate round-2 blocker 1): merge only while
+  tail.text.length + event.text.length <= 64 * 1024 (UTF-16 code units —
+  a coalescing threshold, NOT a byte-memory cap; a single oversized
+  incoming event stays a single item, and byte-based caps remain out of
+  scope). Past the threshold, append as a new item. Same combined-length
+  rule for thinking merges.
 - tail.type === "thinking_delta" && event.type === "thinking_delta" ->
   merge thinking strings likewise (same replacement + byte-bound rules).
 - event.type === "heartbeat" && tail.type === "heartbeat" -> drop event
