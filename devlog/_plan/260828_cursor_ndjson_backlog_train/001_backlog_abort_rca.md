@@ -9,10 +9,11 @@ aborted". Long turn (~12 min "Worked for 12m 21s"), many gh/git tool rounds.
 
 Producer/consumer chain: runTurnAdapter.runTurn(..., queue.push) ->
 queue.stream() -> preflight (core.ts:4696-4709) -> empty-completion
-guard/observer (core.ts:4711-4727) -> bridgeToResponsesSSE (bridge.ts:857-876,
-demand-driven, HWM 1, pauses stepping at bridge.ts:1404-1410) ->
-trackStreamLifetime (lifecycle.ts:439-449) -> request-log wrapper
-(relay.ts:620-638) -> CORS Response -> Bun HTTP.
+guard/observer (core.ts:4711-4727) -> bridgeToResponsesSSE (bridge.ts:857-876;
+HWM=1 documented at bridge.ts:1404-1410, demand-driven stepping happens in
+pull() at bridge.ts:1465-1467) -> trackStreamLifetime (lifecycle.ts:439-449)
+-> request-log wrapper (relay.ts:620-638) -> CORS Response -> Bun HTTP.
+(Anchors re-verified by A-gate round 1; bridge stepping anchor corrected.)
 
 - guardTerminalEventStream is NOT on the runTurn path (only generic
   fetch/parse path, core.ts:5648-5676).
