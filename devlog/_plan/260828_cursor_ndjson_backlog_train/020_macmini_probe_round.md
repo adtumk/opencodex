@@ -14,13 +14,33 @@ port 10100. Codex CLI: /Users/junny/.bun/bin/codex.
    - The user's ~/opencodex dev checkout is NEVER reset or cherry-picked.
      Mandatory: dedicated probe worktree (git -C ~/opencodex worktree add
      ~/ocx-probe-260828/wt <ref> from fetched refs).
-   - Deployment: launchd (com.opencodex.proxy) runs the PRIMARY checkout,
-     so the probe proxy runs from the WORKTREE on a separate port (e.g.
-     10199) as a foreground/background process started via ssh, leaving the
-     launchd service untouched. Record pre-state (git -C ~/opencodex
-     status/branch/sha) before and prove identical after (restoration
-     proof). Probe codex CLI points at port 10199 via its own
-     OPENAI_BASE_URL/config override, never the shared config.
+   - Deployment (A-gate round-1 fold, blockers 1-4):
+     * Probe proxy launcher: a direct Bun entry that imports startServer
+       (server/index.ts) on port 10199 — NOT "ocx start" (its CLI path
+       detects the 10100 owner and exits, and mutates launchd env /
+       startup integrations, cli/index.ts:204/:376, system-env.ts:261).
+     * Isolated homes: OPENCODEX_HOME=~/ocx-probe-260828/home and
+       CODEX_HOME=~/ocx-probe-260828/codex-home for the probe process AND
+       probe codex runs. Never share ocx.pid/runtime-port.json with the
+       primary (process-state.ts last-writer corruption).
+     * Credentials: copy config.json + auth.json into the probe home.
+       NO-REFRESH GATE: before probing, read cursor access-token expiry;
+       require remaining lifetime > planned probe window + 10min skew,
+       else abort (probe-side refresh could rotate the refresh token and
+       invalidate the PRIMARY, oauth/cursor.ts:205/:232). Hash primary
+       auth.json before/after and prove identical.
+     * codex invocation: per-command -c overrides, not OPENAI_BASE_URL:
+       codex exec --json -c 'model_providers.opencodex.base_url="http://127.0.0.1:10199/v1"'
+       -m cursor/grok-4.6 ... ; verify "codex exec --help" advertises
+       --json in the actual login shell first.
+     * Capture contract: per-run files N<k>/run-XX.{command.txt,
+       stdout.ndjson,stderr.log,exit}; probe-home usage.jsonl snapshots
+       (never tail the primary's).
+     * Pre/post primary evidence: branch, SHA, porcelain status, 10100
+       /healthz, launchd state, sha256 of primary config.json + auth.json
+       + ~/.codex/config.toml. Teardown: kill probe PID (verify its
+       command/cwd first), prove 10199 closed + 10100 healthy, git
+       worktree remove + git worktree list proof, keep evidence dir.
 2. Probe matrix (codex exec --json -m cursor/grok-4.6 unless noted), scratch
    cwds under mktemp -d, transcripts + NDJSON to ~/ocx-probe-260828/:
    - N1 5-step chain (090 S4 shape): mkdir/write/read/compute/verify — the
