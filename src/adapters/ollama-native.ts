@@ -496,9 +496,21 @@ function nativeThink(
   throw new Error(`ollama-native does not support reasoning level "${redactSecretString(value)}"`);
 }
 
-function nativeFormat(parsed: OcxParsedRequest): "json" | Record<string, unknown> | undefined {
+function nativeFormat(
+  parsed: OcxParsedRequest,
+  endpointKind: OllamaNativeEndpointKind,
+): "json" | Record<string, unknown> | undefined {
   const format = parsed.options.textFormat;
   if (!format) return undefined;
+  // Ollama's own documentation states "Ollama's Cloud currently does not support structured
+  // outputs" (docs/capabilities/structured-outputs.mdx). Cloud does not reject `format`: it
+  // returns 200 and ignores the constraint, so sending it would turn an output-shape contract
+  // into unconstrained prose the caller believes is schema-valid. Refuse the contract instead,
+  // the same call Kiro makes for a wire that cannot enforce it. Local and custom self-hosted
+  // Ollama keep the native `format` mapping, which their contract does honour.
+  if (endpointKind === "cloud") {
+    throw new Error("ollama-native does not support structured output on Ollama Cloud");
+  }
   if (format.type === "json_object") return "json";
   if (!format.schema || !isRecord(format.schema)) {
     throw new Error("ollama-native json_schema output requires a JSON schema object");
@@ -1047,7 +1059,7 @@ export function createOllamaNativeAdapter(provider: OcxProviderConfig): Provider
       const { headers, hasCredential } = buildHeaders(provider, endpointKind);
       const messages = buildNativeMessages(parsed, issuedToolCallIds);
       const tools = buildNativeTools(parsed);
-      const format = nativeFormat(parsed);
+      const format = nativeFormat(parsed, endpointKind);
       const options: Record<string, unknown> = {};
       const maxOutputTokens = parsed.options.maxOutputTokens
         ?? modelRecordValue(provider.modelMaxOutputTokens, parsed.modelId)
