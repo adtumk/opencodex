@@ -1,12 +1,12 @@
 # 020 — wp3: macmini-cf live probe round (NDJSON empiricism)
 
-Host: macmini-cf (junny). Proxy: ~/opencodex, launchd com.opencodex.proxy,
-port 10100. Codex CLI: /Users/junny/.bun/bin/codex.
+Host: macmini-cf. Proxy: ~/opencodex, launchd com.opencodex.proxy,
+port 10100. Codex CLI: ~/.bun/bin/codex (bun global bin).
 
 ## Procedure
 
 1. Sync (A-gate blockers 11/12 folded):
-   - Environment: /Users/junny/.bun/bin/codex shebang is "env node" and the
+   - Environment: the host codex shim's shebang is "env node" and the
      host has NO node on PATH — every probe command must prepend a node
      shim (export PATH with bun's node alias, or "bun x codex"). VERIFY
      "codex --version" works in the actual probe shell BEFORE claiming any
