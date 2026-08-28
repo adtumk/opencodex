@@ -447,9 +447,12 @@ MCP, запись экрана и computer-use доступны как хуки 
 
 ### Ollama Cloud
 
-Ollama Cloud — это размещённая в облаке (не локальная) Ollama, OpenAI-совместимая по адресу
-`https://ollama.com/v1`, с ключом со страницы
-[ollama.com/settings/keys](https://ollama.com/settings/keys). opencodex классифицирует её облачную
+Ollama Cloud — это размещённая в облаке (не локальная) Ollama. Укажите адрес
+`https://ollama.com/v1` и ключ со страницы
+[ollama.com/settings/keys](https://ollama.com/settings/keys). opencodex обращается к ней через
+собственный REST API Ollama (`POST /api/chat`), а не через OpenAI-совместимую поверхность, и
+получает список моделей от провайдера, поэтому новые модели Ollama Cloud появляются без
+изменения конфигурации. opencodex классифицирует её облачную
 линейку по поддержке изображений, чтобы [vision-сайдкар](/ru/guides/sidecars/) включался
 только для текстовых моделей. Текстовые модели (например, `glm-5.2`, `deepseek-v4-pro`, `gpt-oss`,
 `qwen3-coder`, `minimax-m2.x`, `nemotron-3-*`) перечислены в `noVisionModels`; модели с нативной

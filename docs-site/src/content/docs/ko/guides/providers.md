@@ -403,8 +403,10 @@ model discovery는 이 실험적 어댑터에서 활성화되어 있으며, Curs
 
 ### Ollama Cloud
 
-Ollama Cloud는 호스팅형(로컬이 아님) Ollama로, `https://ollama.com/v1`에서 OpenAI 호환이며 키는
-[ollama.com/settings/keys](https://ollama.com/settings/keys)에서 발급받습니다. opencodex는 클라우드
+Ollama Cloud는 호스팅형(로컬이 아님) Ollama입니다. `https://ollama.com/v1`으로 설정하고 키는
+[ollama.com/settings/keys](https://ollama.com/settings/keys)에서 발급받습니다. opencodex는 OpenAI 호환
+표면이 아니라 Ollama 자체 REST API(`POST /api/chat`)로 연결하며, 모델 목록을 공급자에서 직접
+발견하므로 새 Ollama Cloud 모델이 설정 변경 없이 나타납니다. opencodex는 클라우드
 라인업을 비전 기능에 따라 분류하여 [비전 사이드카](/ko/guides/sidecars/)가 텍스트 전용 모델에만
 작동하도록 합니다. 텍스트 전용 모델(예: `glm-5.2`, `deepseek-v4-pro`, `gpt-oss`, `qwen3-coder`,
 `minimax-m2.x`, `nemotron-3-*`)은 `noVisionModels`에 나열되며, 비전 네이티브 모델(예:

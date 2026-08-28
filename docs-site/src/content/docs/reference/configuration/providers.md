@@ -571,7 +571,6 @@ ids with context `922000` and max input `922000`; OpenRouter seeds `openai/gpt-5
       "defaultModel": "claude-sonnet-4-6"
     },
     "ollama-cloud": {
-      "adapter": "openai-chat",
       "baseUrl": "https://ollama.com/v1",
       "apiKey": "${OLLAMA_API_KEY}",
       "defaultModel": "glm-5.2",

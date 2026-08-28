@@ -308,7 +308,6 @@ OpenRouter 可透過多個推論供應商提供一個模型。`openRouterRouting
       "defaultModel": "claude-sonnet-4-6"
     },
     "ollama-cloud": {
-      "adapter": "openai-chat",
       "baseUrl": "https://ollama.com/v1",
       "apiKey": "${OLLAMA_API_KEY}",
       "defaultModel": "glm-5.2",

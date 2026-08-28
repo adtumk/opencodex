@@ -338,7 +338,6 @@ OpenRouter는 하나의 모델을 여러 추론 공급자로 제공할 수 있�
       "defaultModel": "claude-sonnet-4-6"
     },
     "ollama-cloud": {
-      "adapter": "openai-chat",
       "baseUrl": "https://ollama.com/v1",
       "apiKey": "${OLLAMA_API_KEY}",
       "defaultModel": "glm-5.2",

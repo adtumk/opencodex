@@ -412,8 +412,10 @@ MCP、画面録画、computer-use はエグゼキューターフックで開か�
 
 ### Ollama Cloud
 
-Ollama Cloud はホステッド型(ローカルではない)Ollama で、`https://ollama.com/v1` で OpenAI 互換、キーは
-[ollama.com/settings/keys](https://ollama.com/settings/keys) で発行されます。opencodex はクラウド
+Ollama Cloud はホステッド型(ローカルではない)Ollama です。`https://ollama.com/v1` を設定し、キーは
+[ollama.com/settings/keys](https://ollama.com/settings/keys) で発行します。opencodex は OpenAI 互換
+サーフェスではなく Ollama 自身の REST API(`POST /api/chat`)で接続し、モデル一覧はプロバイダーから
+動的に取得するため、新しい Ollama Cloud モデルは設定変更なしで現れます。opencodex はクラウド
 ラインナップをビジョン機能で分類し、[ビジョンサイドカー](/ja/guides/sidecars/)がテキスト専用モデルにのみ
 動作するようにします。テキスト専用モデル(例: `glm-5.2`、`deepseek-v4-pro`、`gpt-oss`、`qwen3-coder`、
 `minimax-m2.x`、`nemotron-3-*`)は `noVisionModels` に列挙され、ビジョンネイティブモデル(例:

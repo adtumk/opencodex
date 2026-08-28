@@ -340,7 +340,6 @@ OpenRouter 可以通过多个推理提供者来提供同一个模型。`openRout
       "defaultModel": "claude-sonnet-4-6"
     },
     "ollama-cloud": {
-      "adapter": "openai-chat",
       "baseUrl": "https://ollama.com/v1",
       "apiKey": "${OLLAMA_API_KEY}",
       "defaultModel": "glm-5.2",
