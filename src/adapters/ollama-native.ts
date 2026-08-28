@@ -17,7 +17,7 @@ import {
   namespacedToolName,
   toolChoiceToolPredicate,
 } from "../types";
-import { isReasoningEffortOmitted, mapReasoningEffort, modelRecordValue, reasoningEffortMapFor } from "../reasoning-effort";
+import { configuredReasoningEfforts, isReasoningEffortOmitted, mapReasoningEffort, modelRecordValue, reasoningEffortMapFor } from "../reasoning-effort";
 import {
   readBoundedResponseBytes,
 } from "../lib/bounded-body";
@@ -468,9 +468,28 @@ function nativeThink(
   // overrides validate against catalog membership; the wire stays honest because the native
   // adapter clamps the requested effort onto the provider's real supported ladder
   // (clampToSupportedCodexEffort: max/ultra on a [low,medium,high] model serializes "high").
-  let value = mapReasoningEffort(provider, parsed.modelId, requested) ?? requested;
+  const mapped = mapReasoningEffort(provider, parsed.modelId, requested);
+  if (mapped !== undefined) {
+    let value = mapped;
+    if (value === "minimal") value = "low";
+    if (value === "xhigh" || value === "ultra") value = "max";
+    if (value === "enabled" || value === "adaptive" || value === "true") return true;
+    if (value === "disabled" || value === "false") return false;
+    if (NATIVE_THINK_VALUES.has(value)) return value as "low" | "medium" | "high" | "max";
+    throw new Error(`ollama-native does not support reasoning level "${redactSecretString(value)}"`);
+  }
+  // mapReasoningEffort() returned undefined. For an ordinary Codex label against a declared
+  // non-empty ladder this can ONLY be an authoritative post-clamp `__omit__` sentinel (the
+  // clamp resolved the requested effort onto a rung whose wire mapping is the sentinel) —
+  // honour it; never resurrect the raw requested label. Native boolean aliases have no
+  // mapping at all, so their raw passthrough stays isolated here.
+  const supported = configuredReasoningEfforts(provider, parsed.modelId);
+  const ordinaryLabel = requested === "minimal" || requested === "low" || requested === "medium"
+    || requested === "high" || requested === "xhigh" || requested === "ultra"
+    || requested === "max";
+  if (supported !== undefined && supported.length > 0 && ordinaryLabel) return undefined;
+  let value = requested;
   if (value === "minimal") value = "low";
-  if (value === "xhigh" || value === "ultra") value = "max";
   if (value === "enabled" || value === "adaptive" || value === "true") return true;
   if (value === "disabled" || value === "false") return false;
   if (NATIVE_THINK_VALUES.has(value)) return value as "low" | "medium" | "high" | "max";

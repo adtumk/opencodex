@@ -72,6 +72,11 @@ export function ollamaNativeEndpointKind(baseUrl: string): OllamaNativeEndpointK
  * For an unrelated custom host only `/`, `/api`, and `/api/chat` are accepted.  In particular,
  * `/v1` is rejected instead of being stripped or guessed at.
  */
+/** True when the base URL points at canonical Ollama Cloud (not a self-hosted destination). */
+export function isCanonicalOllamaCloudUrl(baseUrl: string): boolean {
+  return ollamaNativeEndpointKind(baseUrl) === "cloud";
+}
+
 export function ollamaNativeChatUrl(baseUrl: string): string {
   const url = parseBaseUrl(baseUrl);
   const kind = endpointKind(url);

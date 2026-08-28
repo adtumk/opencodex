@@ -80,3 +80,45 @@ describe("ollama-native — reasoning wire clamp (catalog universality preserved
     expect(JSON.parse(String(body))).not.toHaveProperty("think");
   });
 });
+
+describe("ollama — post-clamp __omit__ sentinel (V9)", () => {
+  test("RED (V8 semantics) / GREEN: wireMap.high=__omit__ + requested max omits the field, never think:max", async () => {
+    const adapter = createOllamaNativeAdapter({
+      ...provider({ "deepseek-v4-flash:0731": ["low", "medium", "high"] }),
+      modelReasoningEffortMap: { "deepseek-v4-flash:0731": { high: REASONING_EFFORT_OMIT_SENTINEL } },
+    } as never);
+    const { body } = await adapter.buildRequest(parsedWith({ reasoning: "max" }));
+    // mapReasoningEffort clamps max -> high; the wire rung's __omit__ mapping is authoritative.
+    expect(JSON.parse(String(body))).not.toHaveProperty("think");
+  });
+
+  test("GREEN: ultra with max->high clamp still serializes high (boundary-first preserved)", async () => {
+    const adapter = createOllamaNativeAdapter({
+      ...provider({ "deepseek-v4-flash:0731": ["low", "medium", "high"] }),
+      modelReasoningEffortMap: { "deepseek-v4-flash:0731": { ultra: REASONING_EFFORT_OMIT_SENTINEL, max: "high" } },
+    } as never);
+    const { body } = await adapter.buildRequest(parsedWith({ reasoning: "ultra" }));
+    expect(JSON.parse(String(body)).think).toBe("high");
+  });
+
+  test("GREEN: none -> __omit__ omits; none without a mapping still serializes think:false", async () => {
+    const omitting = createOllamaNativeAdapter({
+      ...provider({ "deepseek-v4-flash:0731": ["low", "medium", "high"] }),
+      modelReasoningEffortMap: { "deepseek-v4-flash:0731": { none: REASONING_EFFORT_OMIT_SENTINEL } },
+    } as never);
+    const { body } = await omitting.buildRequest(parsedWith({ reasoning: "none" }));
+    expect(JSON.parse(String(body))).not.toHaveProperty("think");
+
+    const plain = createOllamaNativeAdapter(provider({ "deepseek-v4-flash:0731": ["low", "medium", "high"] }));
+    const plainBuilt = await plain.buildRequest(parsedWith({ reasoning: "none" }));
+    expect(JSON.parse(String(plainBuilt.body)).think).toBe(false);
+  });
+
+  test("GREEN: the clamp itself is unchanged (max/ultra -> high with no omit mapping)", async () => {
+    const adapter = createOllamaNativeAdapter(provider({ "deepseek-v4-flash:0731": ["low", "medium", "high"] }));
+    for (const requested of ["max", "ultra"]) {
+      const { body } = await adapter.buildRequest(parsedWith({ reasoning: requested }));
+      expect(JSON.parse(String(body)).think).toBe("high");
+    }
+  });
+});

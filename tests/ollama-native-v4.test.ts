@@ -67,18 +67,22 @@ describe("ollama-native — EOF vs newline accounting parity", () => {
     expect(eof.snapshot.highWaterBytes).toBe(nl.snapshot.highWaterBytes);
   });
 
-  test("near-limit record with substantial tool arguments: same budget outcome for both terminators", async () => {
-    // Record itself fits under the per-record ceiling, but parsing it charges the record AND its
-    // ~2.5 MiB tool arguments concurrently, which exceeds the 32 MiB turn cap. The
-    // newline-terminated path always paid that; an EOF path that released the record early would
-    // under-count and admit what the newline path rejects.
-    const rec = record(28 * 1024 * 1024, 2.5 * 1024 * 1024);
+  test("non-vacuous near-limit record: aggregate (record + parsed tool args) exceeds the 32 MiB turn cap, while the record itself and each tool argument stay under their individual limits — same budget outcome for both terminators", async () => {
+    // Margins: content 30 MiB + args 1.5 MiB => line ≈ 31.5 MiB (< 32 MiB record/line ceiling;
+    // args 1.5 MiB < the 2 MiB per-call tool-argument limit). While the record is retained, the
+    // parsed tool-argument copy pushes the aggregate translator charge past 32 MiB, so BOTH
+    // terminators must fail with translation_buffer_limit. If the EOF residual were released
+    // before tool translation, the args alone (1.5 MiB) would fit and the EOF case would emit
+    // the tool call — the asymmetry that proves the record stays charged until translated.
+    const rec = record(30 * 1024 * 1024, 1.5 * 1024 * 1024);
     const nl = await run(rec, false);
     const eof = await run(rec, true);
-    expect(nl.events).toHaveLength(1);
-    expect(nl.events[0]).toMatchObject({ type: "error", code: "translation_buffer_limit" });
-    expect(eof.events).toHaveLength(1);
-    expect(eof.events[0]).toMatchObject({ type: "error", code: "translation_buffer_limit" });
+    for (const label of ["newline", "eof"]) {
+      const events = label === "newline" ? nl.events : eof.events;
+      expect(events, label).toHaveLength(1);
+      expect(events[0], label).toMatchObject({ type: "error", code: "translation_buffer_limit" });
+    }
+    expect(nl.snapshot.highWaterBytes).toBe(eof.snapshot.highWaterBytes);
   });
 });
 
