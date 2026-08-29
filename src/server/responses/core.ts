@@ -101,6 +101,7 @@ import type {
 import {
   forceRefreshOAuthAccessSnapshot,
   getValidAccessTokenForAccount,
+  getValidAccessSnapshotForAccount,
   getValidAccessTokenSnapshot,
   publicOAuthAuthenticationErrorMessage,
   type OAuthAccessSnapshot,
@@ -121,9 +122,11 @@ import {
 import { stampOAuthAccountLabel } from "../../providers/label";
 import {
   failoverAccountSnapshot,
+  forgetGenericFailoverRoster,
   GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST,
   isGenericFailoverProvider,
   isGenericOAuthFailoverEnabled,
+  preferredInitialAccount,
   rotateGenericOAuthAccountOn429,
 } from "../../oauth/generic-account-failover";
 import { resolveCopilotApiBaseUrl } from "../../oauth/github-copilot";
@@ -165,10 +168,16 @@ import {
   computeQuotaCooldown,
   codexQuotaScopeForModel,
   formatCodexProviderForLog,
+  handOffThreadAffinityGeneration,
   previewCodexAccountForRequest,
   recordCodexUpstreamOutcome,
   type CodexUpstreamOutcome,
 } from "../../codex/routing";
+import {
+  TokenRefreshError,
+  forceRefreshCodexPoolToken,
+  readCodexAccountRecord,
+} from "../../codex/account-store";
 import { codexAuthContextLogLabel } from "../../codex/account-label";
 import {
   applyUpstreamRecoveryInit,
@@ -1308,6 +1317,10 @@ export function codexForwardTerminalOutcomeRecorder(
       probeLeaseId: codexProbeLeaseId(authCtx),
       probeQuotaScope: codexProbeQuotaScope(authCtx),
       writerGeneration: authCtx.writerGeneration,
+      // A mid-stream terminal can carry a semantic 401 long after the credential was
+      // replaced. It is never replayed — the client already saw output — but it must
+      // not retire the replacement either (#2887).
+      ...(authCtx.kind === "pool" ? { credentialGeneration: authCtx.generation } : {}),
     });
   };
 }
@@ -1738,6 +1751,94 @@ async function resolveResponsesCodexAuth(
     });
     if (response) return { ok: false, response };
     throw err;
+  }
+}
+
+/**
+ * Terminal means the grant itself is dead and no retry can help. Everything else —
+ * an untyped network failure, a token-endpoint 5xx surfacing as `unknown`, an abort,
+ * refresh capacity, lock contention, a superseded flight — is transient, and treating
+ * it as terminal would quarantine a healthy account on an upstream blip, which is the
+ * defect this path exists to fix (#2887).
+ */
+function isTerminalPoolRefreshFailure(error: unknown): boolean {
+  return error instanceof TokenRefreshError && (error.reason === "revoked" || error.reason === "expired");
+}
+
+/**
+ * One forced refresh and one same-account rebuild for a stored pool credential that
+ * upstream rejected with a pre-stream 401. `quarantine` distinguishes a dead grant,
+ * which must retire the account, from a transient failure, which must not.
+ */
+async function refreshPoolForwardAuth(args: {
+  req: Request;
+  route: RouteResult;
+  authCtx: CodexAuthContext & { kind: "pool" };
+  substituteMainCredential: boolean;
+  options: HandleResponsesOptions;
+}): Promise<
+  | { ok: true; authCtx: CodexAuthContext; provider: OcxProviderConfig; headers: Headers }
+  | { ok: false; response: Response; quarantine: boolean; quarantineGeneration?: number }
+> {
+  const { req, route, authCtx, substituteMainCredential, options } = args;
+  try {
+    const refreshed = await forceRefreshCodexPoolToken(authCtx.accountId, {
+      rejectedGeneration: authCtx.generation,
+      rejectedAccessToken: authCtx.accessToken,
+      signal: options.abortSignal,
+    });
+    if (!refreshed.rotated) {
+      // The store resolved to the same bearer upstream just rejected. Replaying it
+      // would spend another upstream call to earn the identical 401. Upstream can do
+      // this on a SUCCESSFUL response by rotating only the refresh grant, so the
+      // credential generation may already have moved — quarantine has to be fenced on
+      // where the credential actually is, not on the generation we started from.
+      return {
+        ok: false,
+        quarantine: true,
+        quarantineGeneration: refreshed.generation,
+        response: formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication"),
+      };
+    }
+    // Only a CAS this request performed itself proves the new credential descends from
+    // the rejected one. Somebody else's replacement may be a different identity, and
+    // its affinity must be retired rather than inherited.
+    if (refreshed.selfRefreshed) {
+      handOffThreadAffinityGeneration(authCtx.accountId, authCtx.generation, refreshed.generation);
+    }
+    const refreshedAuthCtx: CodexAuthContext = {
+      ...authCtx,
+      accessToken: refreshed.accessToken,
+      chatgptAccountId: refreshed.chatgptAccountId,
+      generation: refreshed.generation,
+    };
+    const provider = applyCodexAuthContextToProvider(
+      stripCodexRuntimeProviderFields(route.provider),
+      refreshedAuthCtx,
+      route.codexAccountMode,
+    );
+    const headers = await materializeCodexUpstreamAuthAsync(req.headers, refreshedAuthCtx, {
+      substituteMainCredential,
+      signal: options.abortSignal,
+      nativeMainRefreshDependencies: options.nativeMainRefreshDependencies,
+    });
+    return { ok: true, authCtx: refreshedAuthCtx, provider, headers };
+  } catch (error) {
+    if (isTerminalPoolRefreshFailure(error)) {
+      return {
+        ok: false,
+        quarantine: true,
+        response: formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication"),
+      };
+    }
+    const response = formatErrorResponse(
+      503,
+      "server_busy",
+      "Codex credential refresh did not complete; retry this request",
+    );
+    const headers = new Headers(response.headers);
+    headers.set("Retry-After", "1");
+    return { ok: false, quarantine: false, response: new Response(response.body, { status: response.status, headers }) };
   }
 }
 
@@ -3099,7 +3200,53 @@ async function handleResponsesInner(
         route.provider = { ...route.provider, apiKey: accessToken };
         logCtx.provider = formatAnthropicProviderForLog("anthropic", selection.accountId, config);
       } else {
-        const resolved = await getValidAccessTokenSnapshot(route.providerName);
+        // Prefer the account with known headroom BEFORE the first attempt. Rotation alone
+        // only reacts to a 429, so a turn could open on an account a previous probe already
+        // measured as spent. A null answer means "use the active account", so every provider
+        // without quota evidence keeps the resolution it has today.
+        const preferredAccountId = isGenericFailoverProvider(route.providerName, route.provider)
+          ? preferredInitialAccount(config, route.providerName)
+          : null;
+        // Resolved account-scoped, NOT through failoverAccountSnapshot: that helper marks a
+        // rotation site, and rotation sites must apply their credential through
+        // applyFailoverSnapshot's pairing rules. This is initial resolution — the code below
+        // already pairs the snapshot's Kiro metadata, Copilot origin and Antigravity project
+        // with this same bearer, exactly as it does for the active account.
+        let usedPreferredAccount = preferredAccountId !== null;
+        let resolved: OAuthAccessSnapshot;
+        if (preferredAccountId) {
+          try {
+            // `requireUsableAccount` makes a removed OR reauth-flagged account throw from
+            // inside the resolver's own store read. Without it a revoked account resolves
+            // successfully — its credential is still readable — and the request would
+            // dispatch on an account already known to need a fresh login.
+            resolved = await getValidAccessSnapshotForAccount(
+              route.providerName,
+              preferredAccountId,
+              { requireUsableAccount: true },
+            );
+          } catch {
+            // The roster is read behind a short TTL, so a preferred account can be removed
+            // or flagged for reauth in the window after it was cached. Resolving it then
+            // throws, and a PREFERENCE that turns a healthy request into a 401 is worse
+            // than no preference at all — the active account is still perfectly usable.
+            // Drop the stale roster so the next request re-reads it, and carry on.
+            forgetGenericFailoverRoster(route.providerName);
+            usedPreferredAccount = false;
+            resolved = await getValidAccessTokenSnapshot(route.providerName);
+          }
+        } else {
+          resolved = await getValidAccessTokenSnapshot(route.providerName);
+        }
+        // A Cloud Code Assist account needs its own project. Antigravity's refresh path
+        // tolerates project discovery failing, so a stored account can legitimately have
+        // none — and a PREFERENCE must never turn a working request into an error. Fall
+        // back to the ordinary active-account resolution instead, which is exactly what
+        // would have happened had the preference never existed.
+        if (usedPreferredAccount && route.provider.googleMode === "cloud-code-assist" && !resolved.projectId) {
+          resolved = await getValidAccessTokenSnapshot(route.providerName);
+          usedPreferredAccount = false;
+        }
         replayOAuthCredentialSnapshot = {
           accountId: resolved.accountId,
           generation: resolved.generation,
@@ -3123,9 +3270,19 @@ async function handleResponsesInner(
         // Antigravity (cloud-code-assist) needs the discovered Cloud Code Assist project id in the
         // CCA envelope. Keep it paired with the token snapshot so an account rotation cannot mix
         // a fresh token with project metadata re-read from a different credential generation.
-        if (route.provider.googleMode === "cloud-code-assist" && !route.provider.project) {
-          const projectId = resolved.projectId;
-          if (projectId) route.provider = { ...route.provider, project: projectId };
+        if (route.provider.googleMode === "cloud-code-assist") {
+          // When pre-dispatch chose a DIFFERENT account, the configured project belongs to
+          // the account we did not use, and `!route.provider.project` would skip right past
+          // it — installing B's bearer alongside A's project. That is the #2841 pairing bug
+          // in its original shape, so the preferred-account path replaces the project
+          // unconditionally and refuses to dispatch at all if the chosen account has none.
+          // A project-less preferred account already fell back above, so by here the
+          // preferred path always has one.
+          if (usedPreferredAccount && resolved.projectId) {
+            route.provider = { ...route.provider, project: resolved.projectId };
+          } else if (!route.provider.project && resolved.projectId) {
+            route.provider = { ...route.provider, project: resolved.projectId };
+          }
         }
       }
     } catch (err) {
@@ -3385,9 +3542,10 @@ async function handleResponsesInner(
     );
     // Hosted calls the PROVIDER runs itself. Gated on the destination actually being xAI, so a
     // declaration alone cannot buy the exemption on some other upstream that never serves it.
-    const providerExecutedCallTypes = isXaiResponsesDestination(route.provider)
-      ? collectProviderExecutedCallTypes(clientToolAuthorizationBody)
-      : new Set<ProviderExecutedCallType>();
+    // Provider-executed declarations are authorized from the actual outbound body, after the
+    // adapter has applied destination-specific injection and normalization. Client-executed tool
+    // authority remains bounded to the caller-owned catalog above.
+    const providerExecutedCallTypes = new Set<ProviderExecutedCallType>();
     let request: Awaited<ReturnType<typeof adapter.buildRequest>>;
     try {
       request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
@@ -3455,6 +3613,21 @@ async function handleResponsesInner(
     let undeclaredToolGuardActive = false;
     const refreshUndeclaredToolGuard = (builtRequest: AdapterRequest): void => {
       outboundRequestBody = parseOutboundRequestBody(builtRequest.body);
+      providerExecutedCallTypes.clear();
+      if (isXaiResponsesDestination(route.provider)) {
+        // Preserve the caller-declared authorization recognized by the original classifier, then
+        // add adapter-injected declarations from the actual current-turn outbound catalog.
+        for (const callType of collectProviderExecutedCallTypes(clientToolAuthorizationBody)) {
+          providerExecutedCallTypes.add(callType);
+        }
+        const currentOutboundCatalog = currentTurnWireToolCatalogBody(
+          outboundRequestBody,
+          replayedInputPrefixLength,
+        );
+        for (const callType of collectProviderExecutedCallTypes(currentOutboundCatalog)) {
+          providerExecutedCallTypes.add(callType);
+        }
+      }
       declaredWireToolNames.clear();
       // With no replay prefix the full outbound body belongs to this turn and its normalized
       // aliases are authoritative. A continuation's outbound body still contains historical
@@ -3739,20 +3912,31 @@ async function handleResponsesInner(
 
     if (
       upstreamResponse.status === 401
-      && authCtx.kind === "main-pool"
+      && (authCtx.kind === "main-pool" || authCtx.kind === "pool")
       && usesCodexForwardPoolAuth(authCtx, route.provider)
       && !codexMain401ReplayAttempted
     ) {
       codexMain401ReplayAttempted = true;
       try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed */ }
-      const replay = await refreshNativeMainForwardAuth({
-        req,
-        route,
-        authCtx,
-        substituteMainCredential,
-        options,
-      });
+      const poolAuthCtx = authCtx.kind === "pool" ? authCtx : undefined;
+      const poolReplay = poolAuthCtx
+        ? await refreshPoolForwardAuth({ req, route, authCtx: poolAuthCtx, substituteMainCredential, options })
+        : undefined;
+      const replay = poolReplay
+        ?? await refreshNativeMainForwardAuth({ req, route, authCtx, substituteMainCredential, options });
       if (!replay.ok) {
+        // Compact already records this; core historically returned without recording,
+        // so a dead grant stayed selectable and every request repeated the same doomed
+        // refresh. Fenced by the generation the 401 belongs to (#2887).
+        if (poolAuthCtx && poolReplay && !poolReplay.ok && poolReplay.quarantine) {
+          recordCodexUpstreamOutcome(config, poolAuthCtx.accountId, 401, {
+            threadId: poolAuthCtx.affinityKey,
+            fixedAccount: poolAuthCtx.fixedAccount,
+            modelId: route.modelId,
+            writerGeneration: poolAuthCtx.writerGeneration,
+            credentialGeneration: poolReplay.quarantineGeneration ?? poolAuthCtx.generation,
+          });
+        }
         upstream.abort();
         releaseCodexAuthContextProbeLease(authCtx);
         return replay.response;
@@ -4137,6 +4321,9 @@ async function handleResponsesInner(
           probeLeaseId: codexProbeLeaseId(authCtx),
           probeQuotaScope: codexProbeQuotaScope(authCtx),
           writerGeneration: authCtx.writerGeneration,
+          // Includes a replay's second 401, which is the case that actually retires the
+          // account — fence it on the credential the request was holding.
+          ...(authCtx.kind === "pool" ? { credentialGeneration: authCtx.generation } : {}),
         });
       }
     }
