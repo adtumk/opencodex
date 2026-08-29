@@ -65,14 +65,10 @@ describe("ollama-native — structured output is refused on canonical Ollama Clo
     }
   });
 
-  test("buildRequest refuses the structured-output contract instead of returning an AdapterRequest", () => {
-    // The unit-level property: no AdapterRequest escapes buildRequest for a Cloud
-    // structured-output turn, so the ordinary openai-chat-style fetch path is never even handed a
-    // request to send. That no upstream inference request is actually emitted is proven at the
-    // Responses boundary with staging (HTTP 400, zero /api/chat diagnostics, zero openai-chat
-    // fallback) — recorded in the change's verification material, not restated here.
-    expect(() => createOllamaNativeAdapter(provider()).buildRequest(parsedWith(JSON_SCHEMA)))
-      .toThrow("ollama-native does not support structured output on Ollama Cloud");
+  test("www Ollama spelling cannot bypass the Cloud structured-output boundary", () => {
+    expect(() => createOllamaNativeAdapter(provider({ baseUrl: "https://www.ollama.com/v1" }))
+      .buildRequest(parsedWith(JSON_SCHEMA)))
+      .toThrow("requires canonical Ollama Cloud host ollama.com");
   });
 
   test("CONTROL: ordinary Cloud prose is completely unaffected", () => {
@@ -84,8 +80,8 @@ describe("ollama-native — structured output is refused on canonical Ollama Clo
     expect(Array.isArray(body.messages)).toBe(true);
   });
 
-  test("CONTROL: a non-structured Responses text control does not trip the guard", () => {
-    // `verbosity` and friends ride the same `text` member inbound but leave `textFormat` unset.
+  test("CONTROL: unrelated parsed request options do not trip the structured-output guard", () => {
+    // `textFormat` remains unset; unrelated parsed request options do not mean structured output.
     const request = createOllamaNativeAdapter(provider()).buildRequest(parsedWith({ temperature: 0 }));
     const body = JSON.parse(request.body as string) as Record<string, unknown>;
     expect(body).not.toHaveProperty("format");

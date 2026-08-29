@@ -65,6 +65,13 @@ describe("ollama-native — URL policy", () => {
     expect(() => ollamaNativeChatUrl("https://ollama.com:8443/v1")).toThrow(/non-default ports/);
   });
 
+  test("rejects the www Ollama Cloud alias instead of treating it as custom", () => {
+    expect(() => ollamaNativeEndpointKind("https://www.ollama.com/v1"))
+      .toThrow("requires canonical Ollama Cloud host ollama.com");
+    expect(() => ollamaNativeChatUrl("https://www.ollama.com/v1"))
+      .toThrow("requires canonical Ollama Cloud host ollama.com");
+  });
+
   test("never silently rewrites a /v1 path on an unrelated host", () => {
     expect(() => ollamaNativeChatUrl("https://ollama.internal.example/v1")).toThrow(/refuses custom baseUrl path/);
     expect(ollamaNativeChatUrl("https://ollama.internal.example/api")).toBe("https://ollama.internal.example/api/chat");
@@ -88,6 +95,10 @@ describe("ollama-native — registry and discovery contract", () => {
     // https://ollama.com/v1/models — the standard data[] envelope the generic pipeline
     // already understands, so no special-case envelope code ships with this adapter.
     expect(entry?.modelDiscovery).toEqual({ path: "/v1/models" });
+    expect(entry?.modelContextWindows).toMatchObject({
+      "glm-5.3": 1_048_576,
+      "glm-5.3-flash": 1_048_576,
+    });
   });
 });
 
@@ -105,7 +116,6 @@ describe("ollama-native — truthful serialized catalog capabilities", () => {
       expect(entry?.support_verbosity).toBe(false);
       // default_verbosity is owned by the generic catalog verbosity fix (#2799); on a dev tree
       // without it the strict-fields backfill still emits "low" here. Not asserted in this PR.
-      expect(entry?.service_tiers).toBeUndefined();
       expect(entry?.service_tiers).toBeUndefined();
       expect(entry?.default_service_tier).toBeUndefined();
       expect(entry?.additional_speed_tiers).toBeUndefined();

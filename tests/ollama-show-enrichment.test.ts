@@ -298,8 +298,9 @@ describe("ollama /api/show — scoping, caching, bounds", () => {
       const models = await gatherRoutedModels(withStubbedProviderFetch(config()));
       const found = row(models, "glm-5.3");
       expect(found).toBeDefined(); // the ID roster survives the failed enrichment
-      expect(found?.contextWindow).toBeUndefined();
-      expect(redirectTargetHits).toBe(0); // redirect: "error" — the target was never contacted
+      expect(found?.contextWindow).toBe(1_048_576);
+      // redirect: "manual" plus an explicit providerRedirectError check — the target was never contacted.
+      expect(redirectTargetHits).toBe(0);
     } finally {
       stub.uninstall();
     }
@@ -307,6 +308,33 @@ describe("ollama /api/show — scoping, caching, bounds", () => {
 });
 
 describe("ollama /api/show — payload extraction contract", () => {
+  test("capabilities-only vision produces native vision metadata", () => {
+    expect(ollamaShowMetadataFromPayload({ capabilities: ["vision"] }))
+      .toEqual({ nativeVision: true });
+  });
+
+  test("capabilities-only non-vision produces an explicit negative", () => {
+    expect(ollamaShowMetadataFromPayload({ capabilities: ["completion", "tools"] }))
+      .toEqual({ nativeVision: false });
+  });
+
+  test("valid capabilities remain readable when model_info is absent or malformed", () => {
+    for (const payload of [
+      { model_info: null, capabilities: ["vision"] },
+      { model_info: "malformed", capabilities: ["vision"] },
+      { model_info: [], capabilities: ["vision"] },
+    ]) {
+      expect(ollamaShowMetadataFromPayload(payload)).toEqual({ nativeVision: true });
+    }
+  });
+
+  test("valid model_info and capabilities retain context and vision metadata", () => {
+    expect(ollamaShowMetadataFromPayload({
+      model_info: { "general.architecture": "arch", "arch.context_length": 262_144 },
+      capabilities: ["completion", "vision"],
+    })).toEqual({ contextWindow: 262_144, nativeVision: true });
+  });
+
   test("architecture-named context_length is preferred; ambiguous fallback requires uniqueness", () => {
     expect(ollamaShowMetadataFromPayload({
       model_info: {

@@ -10,6 +10,7 @@ export type OllamaNativeEndpointKind = "local" | "cloud" | "custom";
 
 const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1"]);
 const CLOUD_HOSTNAMES = new Set(["ollama.com"]);
+const REJECTED_CLOUD_ALIAS_HOSTNAMES = new Set(["www.ollama.com"]);
 
 function normalizedPath(url: URL): string {
   const path = url.pathname.replace(/\/+$/, "");
@@ -20,6 +21,9 @@ function endpointKind(url: URL): OllamaNativeEndpointKind {
   // WHATWG URL keeps IPv6 brackets in `hostname` on Bun/Node (`[::1]`), while the
   // loopback policy is stored in its canonical host form (`::1`).
   const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/gu, "");
+  if (REJECTED_CLOUD_ALIAS_HOSTNAMES.has(hostname)) {
+    throw new Error("ollama-native requires canonical Ollama Cloud host ollama.com; www.ollama.com is rejected");
+  }
   if (LOCAL_HOSTNAMES.has(hostname)) return "local";
   if (CLOUD_HOSTNAMES.has(hostname)) return "cloud";
   return "custom";
@@ -62,6 +66,11 @@ export function ollamaNativeEndpointKind(baseUrl: string): OllamaNativeEndpointK
   return kind;
 }
 
+/** True when the base URL points at canonical Ollama Cloud (not a self-hosted destination). */
+export function isCanonicalOllamaCloudUrl(baseUrl: string): boolean {
+  return ollamaNativeEndpointKind(baseUrl) === "cloud";
+}
+
 /**
  * Build the native chat endpoint from a configured base URL.
  *
@@ -72,11 +81,6 @@ export function ollamaNativeEndpointKind(baseUrl: string): OllamaNativeEndpointK
  * For an unrelated custom host only `/`, `/api`, and `/api/chat` are accepted.  In particular,
  * `/v1` is rejected instead of being stripped or guessed at.
  */
-/** True when the base URL points at canonical Ollama Cloud (not a self-hosted destination). */
-export function isCanonicalOllamaCloudUrl(baseUrl: string): boolean {
-  return ollamaNativeEndpointKind(baseUrl) === "cloud";
-}
-
 export function ollamaNativeChatUrl(baseUrl: string): string {
   const url = parseBaseUrl(baseUrl);
   const kind = endpointKind(url);
@@ -96,6 +100,6 @@ export function ollamaNativeChatUrl(baseUrl: string): string {
     );
   }
 
-  url.pathname = `${path === "/api/chat" ? path : "/api/chat"}`;
+  url.pathname = "/api/chat";
   return url.toString();
 }

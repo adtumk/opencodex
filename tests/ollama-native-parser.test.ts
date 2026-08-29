@@ -113,7 +113,7 @@ describe("ollama-native — observer-free streaming", () => {
   });
 
   test("a single NDJSON record over the ceiling fails with the translation buffer limit", async () => {
-    // 40 MiB in ONE record: the record itself exceeds the ceiling and must fail closed.
+    // 33 MiB in ONE record: the record itself exceeds the 32 MiB ceiling and must fail closed.
     const line = "z".repeat(33 * 1024 * 1024);
     const response = new Response(
       `${JSON.stringify({ model: "m", message: { role: "assistant", content: line }, done: true })}\n`,

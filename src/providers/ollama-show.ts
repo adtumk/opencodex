@@ -104,30 +104,32 @@ export function ollamaShowMetadataFromPayload(payload: unknown): OllamaShowMetad
   if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
   const raw = payload as Record<string, unknown>;
   const modelInfo = raw.model_info;
-  if (modelInfo === null || typeof modelInfo !== "object" || Array.isArray(modelInfo)) return undefined;
-  const info = modelInfo as Record<string, unknown>;
-
-  // Prefer the context length named by the model's own architecture, then fall back to a
-  // unique `*.context_length` key only when the architecture spelling is absent or ambiguous.
-  // The architecture key is FILTERED while collecting fallback candidates — the parsed input is
-  // never mutated.
-  const architecture = typeof info["general.architecture"] === "string"
-    ? (info["general.architecture"] as string)
-    : undefined;
   let contextWindow: number | undefined;
-  const architectureKey = architecture !== undefined ? `${architecture}.context_length` : undefined;
-  if (architectureKey !== undefined) {
-    const value = info[architectureKey];
-    if (isPlausibleContextLength(value)) contextWindow = value;
-  }
-  if (contextWindow === undefined) {
-    const candidates = Object.entries(info)
-      .filter(([key, value]) =>
-        key.endsWith(".context_length")
-        && key !== architectureKey
-        && isPlausibleContextLength(value))
-      .map(([, value]) => value as number);
-    if (candidates.length === 1) contextWindow = candidates[0];
+  const info = modelInfo !== null && typeof modelInfo === "object" && !Array.isArray(modelInfo)
+    ? modelInfo as Record<string, unknown>
+    : undefined;
+  if (info !== undefined) {
+    // Prefer the context length named by the model's own architecture, then fall back to a
+    // unique `*.context_length` key only when the architecture spelling is absent or ambiguous.
+    // The architecture key is FILTERED while collecting fallback candidates — the parsed input is
+    // never mutated.
+    const architecture = typeof info["general.architecture"] === "string"
+      ? (info["general.architecture"] as string)
+      : undefined;
+    const architectureKey = architecture !== undefined ? `${architecture}.context_length` : undefined;
+    if (architectureKey !== undefined) {
+      const value = info[architectureKey];
+      if (isPlausibleContextLength(value)) contextWindow = value;
+    }
+    if (contextWindow === undefined) {
+      const candidates = Object.entries(info)
+        .filter(([key, value]) =>
+          key.endsWith(".context_length")
+          && key !== architectureKey
+          && isPlausibleContextLength(value))
+        .map(([, value]) => value as number);
+      if (candidates.length === 1) contextWindow = candidates[0];
+    }
   }
 
   const capabilities = Array.isArray(raw.capabilities)

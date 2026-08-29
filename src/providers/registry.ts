@@ -2567,6 +2567,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // Live IDs verified 2026-07-10; qwen3-coder:480b retires 2026-07-15.
     models: ["glm-5.3", "glm-5.3-flash", "glm-5.2", "deepseek-v4-pro", "qwen3-coder:480b", "gpt-oss:120b", "kimi-k2.6", "minimax-m3", "qwen3.5:397b", "gemma4:31b"],
     defaultModel: "glm-5.3",
+    // Owner-audited exact outage fallback: these current Ollama Cloud GLM-5.3 rows have
+    // 1,048,576-token context windows. Live discovery and successful /api/show enrichment keep
+    // their existing precedence; these values prevent a failed show from becoming generic.
+    modelContextWindows: { "glm-5.3": 1_048_576, "glm-5.3-flash": 1_048_576 },
     noVisionModels: [
       // glm-5.3-flash is absent on purpose: native VLM
       // (docs.z.ai/guides/vlm/glm-5.3-flash), so its images skip the sidecar.

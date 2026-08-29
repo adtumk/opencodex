@@ -189,7 +189,7 @@ describe("ollama /api/show — auth and outbound-policy integration", () => {
       const models = await gatherRoutedModels(withStubbedProviderFetch(providerConfig()));
       const found = rowOf(models, "glm-5.3");
       expect(found).toBeDefined();
-      expect(found?.contextWindow).toBeUndefined();
+      expect(found?.contextWindow).toBe(1_048_576);
       expect(redirectTargetHits).toBe(0);
     } finally {
       stub.uninstall();
@@ -211,6 +211,21 @@ describe("ollama /api/show — auth and outbound-policy integration", () => {
       const serialized = JSON.stringify(models);
       expect(serialized).not.toContain("test-key-not-a-real-credential");
       expect(serialized).not.toContain("transport exploded");
+    } finally {
+      stub.uninstall();
+    }
+  });
+
+  test("7: discovered GLM-5.3 retains the static context fallback when /api/show fails", async () => {
+    const stub = stubFetch((url) => {
+      if (url.endsWith("/v1/models")) return jsonRes({ object: "list", data: [{ id: "glm-5.3" }] });
+      if (url.endsWith("/api/show")) return new Response("show unavailable", { status: 503 });
+      return new Response("nf", { status: 404 });
+    });
+    try {
+      const models = await gatherRoutedModels(withStubbedProviderFetch(providerConfig()));
+      expect(rowOf(models, "glm-5.3")?.contextWindow).toBe(1_048_576);
+      expect(showCalls(stub.calls)).toHaveLength(1);
     } finally {
       stub.uninstall();
     }
@@ -292,7 +307,6 @@ describe("ollama /api/show — aggregate fan-out bounds", () => {
         headers: { Authorization: "Bearer access-token-value-ollama-show" },
         discoveryUrl: "https://ollama.com/v1/models",
         modelIds: ["ok-3"],
-        apiKey: undefined,
         deadlineMs: 5_000,
         requestTimeoutMs: 5_000,
         provider: { baseUrl: "https://ollama.com/v1", fetch: globalThis.fetch },
@@ -352,10 +366,6 @@ describe("ollama /api/show — payload extraction contract (input not mutated)",
     expect(JSON.stringify(payload)).toBe(before); // input untouched
   });
 });
-describe("ollama — one authority contract across /v1/models, /api/show, /api/chat (V8)", () => {
-  /** Observe the effective Authorization on all three Ollama request surfaces for one config. */
-});
-
 // The adapter-level third surface is exercised directly below via the real adapter factory,
 // which is what the native /api/chat route uses.
 import { createOllamaNativeAdapter } from "../src/adapters/ollama-native";
@@ -365,6 +375,7 @@ function nativeParsed(modelId = "glm-5.3-flash"): OcxParsedRequest {
   return { modelId, stream: true, options: {}, context: { messages: [{ role: "user", content: "hi" }] } } as unknown as OcxParsedRequest;
 }
 
+/** Observe the effective Authorization on all three Ollama request surfaces for one config. */
 describe("ollama — three-surface auth matrix (V8)", () => {
   const CASES: Array<{ name: string; provider: Record<string, unknown>; expectConfigured?: string }> = [
     { name: "apiKey only", provider: {} },
@@ -406,7 +417,6 @@ describe("ollama — three-surface auth matrix (V8)", () => {
         expect(showAuth).toHaveLength(1);
 
         // Third surface: native /api/chat request headers.
-        const { createOllamaNativeAdapter } = await import("../src/adapters/ollama-native");
         const adapter = createOllamaNativeAdapter({
           adapter: "ollama-native", baseUrl: "https://ollama.com/v1", authMode: "key",
           apiKey: "test-key-not-a-real-credential",
@@ -459,7 +469,6 @@ describe("ollama — three-surface auth matrix (V8)", () => {
       expect(showHeaders.Authorization).toBe("Bearer header-only");
 
       // Third surface: the native /api/chat request from the same header-only provider.
-      const { createOllamaNativeAdapter } = await import("../src/adapters/ollama-native");
       const adapter = createOllamaNativeAdapter({
         adapter: "ollama-native", baseUrl: "https://ollama.com/v1", authMode: "key",
         apiKey: undefined, keyOptional: true, liveModels: true, models: ["glm-5.3"],
