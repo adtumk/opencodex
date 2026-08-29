@@ -73,6 +73,13 @@ export const CURSOR_ROUTING_LEVEL_PARAMETER_ID = "optimization";
 export const CURSOR_EXTERNAL_ROOT_BLOB_LIMIT = 192;
 /** Approximate prompt-size guard; tool schemas and protocol framing consume context separately. */
 export const CURSOR_EXTERNAL_ROOT_BYTE_LIMIT = 512 * 1024;
+/**
+ * Byte budget for the serialized arguments named inside ONE replayed tool-result envelope. The
+ * invocation identifies the call; the result is the payload. Without an independent cap, a single
+ * large-but-legitimate argument (a 600 KiB file write) consumed the whole root history budget and
+ * the result output was truncated away instead.
+ */
+export const CURSOR_INVOCATION_ARGUMENTS_BYTE_LIMIT = 2 * 1024;
 
 /**
  * Action text for external-model tool-result continuations. Native models keep
@@ -197,7 +204,17 @@ function assistantRootText(
 // [Tool Error] marker so Cursor does not wrap them as `<user_query>` (#1992). Native resume models
 // already carry the paired MCP result on turns[], so that marker is omitted from root replay — Auto
 // few-shot-mimics it as chat text otherwise. Each entry is a SHA-256 blob ID.
-function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobRequestScopeToken): {
+function rootPromptMessages(
+  request: CursorRunRequest,
+  requestScope: CursorBlobRequestScopeToken,
+  /**
+   * Calls indexed from the FULL history. The checkpoint path replays only a suffix of
+   * `rawMessages`, so a result in that suffix can have its originating call before the cut; indexing
+   * from the slice alone silently dropped the invocation line for every checkpoint continuation,
+   * which is where the defect this line prevents actually reappeared in live use.
+   */
+  knownCalls?: Map<string, Extract<OcxAssistantContentPart, { type: "toolCall" }>>,
+): {
   ids: Uint8Array[];
   byteLength: number;
   historyMessageStart: number;
@@ -218,6 +235,9 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
 
   const externalModel = isCursorExternalWireModel(request.modelId);
   const echoToolResultInRoot = cursorNeedsExternalToolContinuation(request.modelId);
+  // Replayed results name the invocation that produced them; without it the result is orphaned
+  // (devlog 260829 000_rca). Indexed once per request rather than rescanned per result.
+  const replayedCalls = echoToolResultInRoot ? (knownCalls ?? toolCallsByCallId(messages)) : undefined;
   const lastRawIsToolResult = messages.at(-1)?.role === "toolResult";
   const activeUserIndex = lastRawIsToolResult ? -1 : lastActionIndex(messages);
   // Repetition breaker (devlog 260826 gap-9): external full-replay flattens history to text,
@@ -287,7 +307,11 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
           text,
         );
       }
-      // Assistant tool CALLS are intentionally NOT replayed as visible "[Tool Call]" text here.
+      // Assistant tool CALLS are NOT replayed as a separate visible "[Tool Call]" entry: a model
+       // few-shot-mimics that marker and emits later tool calls as inert text (363-B guard in
+      // tests/cursor-tool-continuation.test.ts). The invocation is instead named INSIDE the paired
+      // "[Tool Result]" envelope below, which carries the same information without a mimickable
+      // call template (devlog 260829 002_audit_round2).
     } else if (message.role === "toolResult") {
       // Native resume models already receive the paired MCP result through turns[]. Replaying
       // the same payload as assistant-role "[Tool Result]" / "[tool_result]" text teaches Auto
@@ -296,7 +320,7 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
       // #1920: the prefix must reflect the NORMALIZED error state (an empty
       // node_repl result is an error even when the runtime said isError=false).
       const prefix = normalizedToolResult(message, contentToText(message.content)).isError ? "[Tool Error]" : "[Tool Result]";
-      const text = `${prefix}\n${toolResultToText(message)}`;
+      const text = `${prefix}\n${toolResultToText(message, replayedCalls?.get(decodeCursorCallId(message.toolCallId)))}`;
       pushDeduped(toolResultRootPayload(text), "toolResult", { messageIndex: i, text }, text);
     }
   }
@@ -660,12 +684,130 @@ function toolResultContentItems(
   return items;
 }
 
-function toolResultToText(message: OcxToolResultMessage): string {
+/**
+ * Serialize tool-call arguments for the replayed transcript, or `undefined` when they cannot be
+ * serialized at all. `OcxToolCall.arguments` is always an object, but it originates in provider
+ * JSON, so a cyclic or BigInt-bearing value must degrade instead of throwing inside request
+ * encoding. The failure is reported as `undefined` rather than a marker string so callers can tell
+ * "these two argument sets are equal" apart from "neither could be read" — collapsing both onto one
+ * marker made every unserializable argument set compare equal to every other.
+ */
+function serializeToolCallArguments(args: Record<string, unknown>): string | undefined {
+  try {
+    const serialized = JSON.stringify(args);
+    return typeof serialized === "string" ? serialized : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Truncate to a byte budget without splitting a UTF-8 sequence. */
+function truncateUtf8(text: string, maxBytes: number): string {
+  const encoded = encoder.encode(text);
+  if (encoded.byteLength <= maxBytes) return text;
+  let end = Math.max(0, maxBytes);
+  while (end > 0 && (encoded[end]! & 0xc0) === 0x80) end -= 1;
+  return decoder.decode(encoded.subarray(0, end));
+}
+
+/**
+ * Rendered argument text for one invocation line, bounded independently of the result it describes.
+ *
+ * The invocation is CONTEXT for a replayed result; the result itself is the payload. Serializing
+ * arguments in full inverted that: a legitimate 600 KiB `write_file` argument consumed the entire
+ * `CURSOR_EXTERNAL_ROOT_BYTE_LIMIT` history budget, so `truncateToolResultBlob` kept the invocation
+ * prefix and cut the actual output away — reproducing the very orphaned-result failure this line
+ * exists to prevent. A bounded prefix still identifies the call (tool name plus the head of its
+ * arguments) while leaving the output room to survive.
+ */
+function toolCallArgumentsText(args: Record<string, unknown>): string {
+  const serialized = serializeToolCallArguments(args);
+  if (serialized === undefined) return "[unserializable arguments]";
+  if (encoder.encode(serialized).byteLength <= CURSOR_INVOCATION_ARGUMENTS_BYTE_LIMIT) return serialized;
+  // The budget is the size of the RENDERED line, so the marker has to come out of it rather than be
+  // added on top: otherwise every truncated invocation exceeds the declared limit by the marker.
+  const marker = "…[arguments truncated]";
+  const markerBytes = encoder.encode(marker).byteLength;
+  const keep = Math.max(0, CURSOR_INVOCATION_ARGUMENTS_BYTE_LIMIT - markerBytes);
+  return `${truncateUtf8(serialized, keep)}${marker}`;
+}
+
+/**
+ * The invocation that produced a replayed tool result, rendered as ONE descriptive line inside the
+ * result envelope.
+ *
+ * Why not a separate "[Tool Call]" entry: a model few-shot-mimics that marker and starts emitting
+ * later tool calls as inert text instead of real tool frames, which halts multi-tool continuations
+ * (363-B guard, tests/cursor-tool-continuation.test.ts). Why it must exist at all: without any
+ * record of the invocation, the replayed result is orphaned — its `call_id` refers to nothing the
+ * model can see — and live cursor/grok-4.6 turns re-ran commands that had already succeeded while
+ * narrating a phantom interrupt (devlog 260829 000_rca). A prose line inside the result satisfies
+ * both: the invocation is visible, but there is no call-shaped template to copy.
+ */
+function toolInvocationLine(call: Extract<OcxAssistantContentPart, { type: "toolCall" }>): string {
+  return `invoked: ${namespacedToolName(call.namespace, call.name)} with ${toolCallArgumentsText(call.arguments)}`;
+}
+
+/**
+ * Index assistant tool calls by decoded call id so a replayed result can name its invocation.
+ *
+ * A call id is supposed to be unique, but nothing upstream guarantees it across a long history, and
+ * `decodeCursorCallId` can map distinct wire ids onto the same decoded id. Two calls sharing one id
+ * would make the LAST one describe every result bearing it, so an early result could be labelled
+ * with a later command — a wrong invocation is worse than none, since it is the kind of mislabel the
+ * model cannot detect. Keep the FIRST call for an id (results follow their call, so the first
+ * binding is the one an earlier result belongs to) and drop the ambiguous id entirely once a second
+ * distinct call claims it, which degrades to the honest no-invocation-line path.
+ */
+function toolCallsByCallId(messages: readonly OcxMessage[]): Map<string, Extract<OcxAssistantContentPart, { type: "toolCall" }>> {
+  const calls = new Map<string, Extract<OcxAssistantContentPart, { type: "toolCall" }>>();
+  const ambiguous = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (part.type !== "toolCall") continue;
+      const callId = decodeCursorCallId(part.id);
+      if (ambiguous.has(callId)) continue;
+      const existing = calls.get(callId);
+      if (!existing) {
+        calls.set(callId, part);
+        continue;
+      }
+      // Same id, and not the same invocation: neither claim can be trusted for a given result.
+      // Identity is the FULL namespaced name — `one__read` and `two__read` are different tools, and
+      // comparing bare `name` labelled both results with the first namespace. Arguments count as
+      // different whenever either side cannot be serialized: two distinct unserializable argument
+      // sets are not evidence of the same call, so they must not compare equal.
+      const existingArgs = serializeToolCallArguments(existing.arguments);
+      const partArgs = serializeToolCallArguments(part.arguments);
+      const sameInvocation = namespacedToolName(existing.namespace, existing.name) === namespacedToolName(part.namespace, part.name)
+        && existingArgs !== undefined
+        && partArgs !== undefined
+        && existingArgs === partArgs;
+      if (!sameInvocation) {
+        calls.delete(callId);
+        ambiguous.add(callId);
+      }
+    }
+  }
+  return calls;
+}
+
+/**
+ * The replayed text of one tool result. When `call` is supplied, the invocation that produced it is
+ * named inline so the result is not orphaned; when it is absent (no match, or an ambiguous call id)
+ * the envelope is emitted unchanged rather than guessing.
+ */
+function toolResultToText(
+  message: OcxToolResultMessage,
+  call?: Extract<OcxAssistantContentPart, { type: "toolCall" }>,
+): string {
   const normalized = normalizedToolResult(message, contentToText(message.content));
   return [
     "[tool_result]",
     `call_id: ${decodeCursorCallId(message.toolCallId)}`,
     `name: ${namespacedToolName(message.toolNamespace, message.toolName)}`,
+    ...(call ? [toolInvocationLine(call)] : []),
     `is_error: ${normalized.isError}`,
     "output:",
     normalized.text,
@@ -799,6 +941,8 @@ function conversationTurns(
   request: CursorRunRequest,
   requestScope: CursorBlobRequestScopeToken,
   historyMessageStart = 0,
+  /** Calls indexed from the FULL history; see {@link rootPromptMessages}. */
+  knownCalls?: Map<string, Extract<OcxAssistantContentPart, { type: "toolCall" }>>,
 ): Uint8Array[] {
   const messages = request.rawMessages;
   if (!messages?.length) return [];
@@ -806,6 +950,7 @@ function conversationTurns(
   const externalModel = isCursorExternalWireModel(request.modelId);
   const historyEnd = messages.at(-1)?.role === "toolResult" ? messages.length : Math.max(0, end);
   const start = externalModel ? Math.max(0, historyMessageStart) : 0;
+  const turnCalls = externalModel ? (knownCalls ?? toolCallsByCallId(messages)) : undefined;
   const turns: Uint8Array[] = [];
   let current: { userMessage: Uint8Array; steps: Uint8Array[] } | undefined;
   const pendingToolCalls = new Map<string, Extract<OcxAssistantContentPart, { type: "toolCall" }>>();
@@ -857,10 +1002,14 @@ function conversationTurns(
         // reported repro path for empty Computer Use results.
         const normalized = normalizedToolResult(message, contentToText(message.content));
         const prefix = normalized.isError ? "[Tool Error]" : "[Tool Result]";
+        // Name the invocation here as well, for the same reason the root replay does: a result with
+        // no visible originating call reads as an interrupted attempt (devlog 260829 000_rca).
+const call = turnCalls?.get(decodeCursorCallId(message.toolCallId));
+        const invocation = call ? `${toolInvocationLine(call)}\n` : "";
         current.steps.push(storeCursorBlob(toBinary(ConversationStepSchema, create(ConversationStepSchema, {
           message: {
             case: "assistantMessage",
-            value: create(AssistantMessageSchema, { text: `${prefix}\n${normalized.text}` }),
+            value: create(AssistantMessageSchema, { text: `${prefix}\n${invocation}${normalized.text}` }),
           },
         })), requestScope));
         continue;
@@ -1018,8 +1167,11 @@ function buildPreparedCursorRunRequest(
           system: [],
           rawMessages: request.rawMessages.slice(suffixStart),
         };
-        const suffixRoots = rootPromptMessages(suffixRequest, requestScope);
-        const suffixTurns = conversationTurns(suffixRequest, requestScope, suffixRoots.historyMessageStart);
+        // Index calls from the FULL history, not the suffix: the cut can fall between a call and
+        // its result, and a result replayed without its invocation is the orphaned-result defect.
+        const fullHistoryCalls = toolCallsByCallId(request.rawMessages);
+        const suffixRoots = rootPromptMessages(suffixRequest, requestScope, fullHistoryCalls);
+        const suffixTurns = conversationTurns(suffixRequest, requestScope, suffixRoots.historyMessageStart, fullHistoryCalls);
         const suffixSystemCount = systemPromptBlobs(suffixRequest).length;
         const suffixHistoryIds = suffixRoots.ids.slice(suffixSystemCount);
         const suffixHistorySerialized = suffixRoots.serialized.slice(suffixSystemCount);
