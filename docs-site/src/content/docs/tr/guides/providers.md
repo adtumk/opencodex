@@ -636,6 +636,11 @@ yalnızca salt metin modeller için devreye girer. Salt metin modeller (örneği
 etiketlerine toleranslıdır, bu nedenle `gpt-oss`, `gpt-oss:120b` ve
 `gpt-oss:20b`'yi kapsar.
 
+Ollama şu anda yapılandırılmış çıktıyı Ollama Cloud'da desteklemediğini belgeliyor. Kanonik
+`ollama-cloud` için opencodex, yapılandırılmış çıktı isteklerini (`text.format`) serbest metni
+sessizce döndürmek yerine net bir hatayla reddeder; yerel ve özel `ollama-native` uç noktaları
+Ollama'nın yerel `format` davranışını korur.
+
 ## 4. Yerel sağlayıcılar
 
 opencodex'i yerel bir OpenAI uyumlu sunucuya yönlendirin — genellikle boş bir

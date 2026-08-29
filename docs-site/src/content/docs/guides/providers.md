@@ -613,6 +613,11 @@ text-only models. Text-only models (e.g. `glm-5.2`, `deepseek-v4-pro`, `gpt-oss`
 `kimi-k2.6`, `minimax-m3`, `gemma4`, `qwen3.5`, `gemini-3-flash-preview`) are not. Matching is
 tolerant of Ollama's `:size` tags, so `gpt-oss` covers `gpt-oss:120b` and `gpt-oss:20b`.
 
+Ollama currently documents structured outputs as unsupported on Ollama Cloud. For canonical
+`ollama-cloud`, opencodex therefore refuses structured-output requests (`text.format`) with a clear
+error instead of silently returning unconstrained prose; local and custom `ollama-native`
+endpoints keep Ollama's native `format` behavior.
+
 ## 4. Local providers
 
 Point opencodex at a local OpenAI-compatible server — usually with a blank key:

@@ -586,6 +586,12 @@ exclusivement textuels. Ces derniers, par exemple `glm-5.2`, `deepseek-v4-pro`, 
 `kimi-k2.6`, `minimax-m3`, `gemma4`, `qwen3.5` et `gemini-3-flash-preview`, n'y figurent pas. La correspondance
 tolère les balises `:size` d'Ollama : `gpt-oss` couvre donc `gpt-oss:120b` et `gpt-oss:20b`.
 
+Ollama documente actuellement la sortie structurée comme non prise en charge sur Ollama Cloud.
+Pour `ollama-cloud` canonique, opencodex refuse donc les requêtes à sortie structurée
+(`text.format`) avec une erreur explicite plutôt que de renvoyer silencieusement une prose libre ;
+les points de terminaison locaux et personnalisés `ollama-native` conservent le comportement
+natif `format` d'Ollama.
+
 ## 4. Fournisseurs locaux
 
 Faites pointer opencodex vers un serveur local compatible OpenAI, généralement avec une clé vide :

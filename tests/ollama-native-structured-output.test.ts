@@ -65,19 +65,14 @@ describe("ollama-native — structured output is refused on canonical Ollama Clo
     }
   });
 
-  test("the Cloud refusal happens before any upstream request is attempted", () => {
-    // `buildRequest` is the only place this adapter composes an outbound request, and it is called
-    // before the caller fetches. If a fetch were somehow reachable from it, this executor would
-    // record it. Nothing may call it.
-    let outboundCalls = 0;
-    const spyFetch = ((..._args: unknown[]) => {
-      outboundCalls += 1;
-      throw new Error("no upstream request may be attempted for a refused structured-output turn");
-    }) as unknown as typeof fetch;
-
-    expect(() => createOllamaNativeAdapter(provider({ fetch: spyFetch } as never)).buildRequest(parsedWith(JSON_SCHEMA)))
+  test("buildRequest refuses the structured-output contract instead of returning an AdapterRequest", () => {
+    // The unit-level property: no AdapterRequest escapes buildRequest for a Cloud
+    // structured-output turn, so the ordinary openai-chat-style fetch path is never even handed a
+    // request to send. That no upstream inference request is actually emitted is proven at the
+    // Responses boundary with staging (HTTP 400, zero /api/chat diagnostics, zero openai-chat
+    // fallback) — recorded in the change's verification material, not restated here.
+    expect(() => createOllamaNativeAdapter(provider()).buildRequest(parsedWith(JSON_SCHEMA)))
       .toThrow("ollama-native does not support structured output on Ollama Cloud");
-    expect(outboundCalls).toBe(0);
   });
 
   test("CONTROL: ordinary Cloud prose is completely unaffected", () => {

@@ -413,6 +413,11 @@ Ollama Cloud는 호스팅형(로컬이 아님) Ollama입니다. `https://ollama.
 `kimi-k2.6`, `minimax-m3`, `gemma4`, `qwen3.5`, `gemini-3-flash-preview`)은 포함되지 않습니다. 매칭은
 Ollama의 `:size` 태그에 관대하므로 `gpt-oss`는 `gpt-oss:120b`와 `gpt-oss:20b`를 모두 포괄합니다.
 
+Ollama는 현재 구조화 출력이 Ollama Cloud에서 지원되지 않는다고 문서화하고 있습니다. 정식
+`ollama-cloud`에 대한 구조화 출력 요청(`text.format`)은 opencodex가 자유 서술을 조용히 돌려주는
+대신 명확한 오류로 거부합니다. 로컬 / 커스텀 `ollama-native` 엔드포인트는 Ollama의 네이티브
+`format` 동작을 유지합니다.
+
 ## 4. 로컬 프로바이더
 
 opencodex를 로컬 OpenAI 호환 서버로 향하게 하세요 — 보통은 빈 키와 함께 사용합니다:
