@@ -65,6 +65,11 @@ describe("ollama-native — URL policy", () => {
     expect(() => ollamaNativeChatUrl("https://ollama.com:8443/v1")).toThrow(/non-default ports/);
   });
 
+  test("treats one terminal-dot Ollama Cloud hostname as canonical", () => {
+    expect(ollamaNativeEndpointKind("https://ollama.com./api")).toBe("cloud");
+    expect(ollamaNativeChatUrl("https://ollama.com./api")).toBe("https://ollama.com/api/chat");
+  });
+
   test("rejects the www Ollama Cloud alias instead of treating it as custom", () => {
     expect(() => ollamaNativeEndpointKind("https://www.ollama.com/v1"))
       .toThrow("requires canonical Ollama Cloud host ollama.com");

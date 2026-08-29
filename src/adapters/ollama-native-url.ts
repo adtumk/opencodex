@@ -12,6 +12,11 @@ const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1"]);
 const CLOUD_HOSTNAMES = new Set(["ollama.com"]);
 const REJECTED_CLOUD_ALIAS_HOSTNAMES = new Set(["www.ollama.com"]);
 
+function normalizedHostname(url: URL): string {
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/gu, "");
+  return hostname.endsWith(".") ? hostname.slice(0, -1) : hostname;
+}
+
 function normalizedPath(url: URL): string {
   const path = url.pathname.replace(/\/+$/, "");
   return path === "/" ? "" : path;
@@ -20,7 +25,7 @@ function normalizedPath(url: URL): string {
 function endpointKind(url: URL): OllamaNativeEndpointKind {
   // WHATWG URL keeps IPv6 brackets in `hostname` on Bun/Node (`[::1]`), while the
   // loopback policy is stored in its canonical host form (`::1`).
-  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/gu, "");
+  const hostname = normalizedHostname(url);
   if (REJECTED_CLOUD_ALIAS_HOSTNAMES.has(hostname)) {
     throw new Error("ollama-native requires canonical Ollama Cloud host ollama.com; www.ollama.com is rejected");
   }
@@ -100,6 +105,7 @@ export function ollamaNativeChatUrl(baseUrl: string): string {
     );
   }
 
+  if (kind === "cloud") url.hostname = normalizedHostname(url);
   url.pathname = "/api/chat";
   return url.toString();
 }

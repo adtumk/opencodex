@@ -427,6 +427,10 @@ describe("ollama — three-surface auth matrix (V8)", () => {
         const chatAuth = Object.entries(chatHeaders).filter(([n]) => n.toLowerCase() === "authorization");
         expect(chatAuth).toHaveLength(1);
 
+        // Every surface must carry the same effective credential, regardless of header spelling.
+        expect(showAuth[0][1]).toBe(modelsAuth[0][1]);
+        expect(chatAuth[0][1]).toBe(modelsAuth[0][1]);
+
         // ONE effective credential, and configured auth wins where supplied.
         if (c.expectConfigured !== undefined) {
           expect(modelsAuth[0][1]).toBe(c.expectConfigured);
@@ -464,9 +468,15 @@ describe("ollama — three-surface auth matrix (V8)", () => {
       } as never);
       const models = await gatherRoutedModels(cfg);
       expect(models.find(m => m.provider === "ollama-cloud" && m.id === "glm-5.3")?.contextWindow).toBe(1_048_576); // enriched without apiKey
+      const modelsRequest = stub.calls.find(k => k.url.endsWith("/v1/models"));
+      expect(modelsRequest).toBeDefined();
+      const modelsHeaders = (modelsRequest.init.headers ?? {}) as Record<string, string>;
+      const modelsAuth = Object.entries(modelsHeaders).filter(([n]) => n.toLowerCase() === "authorization");
+      expect(modelsAuth).toHaveLength(1);
       const show = showCalls(stub.calls)[0];
       const showHeaders = (show.init.headers ?? {}) as Record<string, string>;
-      expect(showHeaders.Authorization).toBe("Bearer header-only");
+      const showAuth = Object.entries(showHeaders).filter(([n]) => n.toLowerCase() === "authorization");
+      expect(showAuth).toHaveLength(1);
 
       // Third surface: the native /api/chat request from the same header-only provider.
       const adapter = createOllamaNativeAdapter({
@@ -481,7 +491,9 @@ describe("ollama — three-surface auth matrix (V8)", () => {
       const chatHeaders = chat.headers as Record<string, string>;
       const chatAuth = Object.entries(chatHeaders).filter(([n]) => n.toLowerCase() === "authorization");
       expect(chatAuth).toHaveLength(1); // exactly one case-insensitive Authorization header
-      expect(chatAuth[0][1]).toBe("Bearer header-only"); // the configured header-only fixture value
+      expect(modelsAuth[0][1]).toBe("Bearer header-only"); // the configured header-only fixture value
+      expect(showAuth[0][1]).toBe(modelsAuth[0][1]);
+      expect(chatAuth[0][1]).toBe(modelsAuth[0][1]);
       expect(chat.url).toBe("https://ollama.com/api/chat"); // native route accepted the request
     } finally {
       stub.uninstall();

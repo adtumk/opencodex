@@ -59,7 +59,7 @@ describe("ollama-native — structured output is refused on canonical Ollama Clo
   });
 
   test("every accepted canonical Cloud base-URL spelling refuses it, not just the stored /v1 form", () => {
-    for (const baseUrl of ["https://ollama.com", "https://ollama.com/v1", "https://ollama.com/api", "https://ollama.com/api/chat"]) {
+    for (const baseUrl of ["https://ollama.com", "https://ollama.com/v1", "https://ollama.com/api", "https://ollama.com/api/chat", "https://ollama.com./api"]) {
       expect(() => createOllamaNativeAdapter(provider({ baseUrl })).buildRequest(parsedWith(JSON_SCHEMA)), baseUrl)
         .toThrow("ollama-native does not support structured output on Ollama Cloud");
     }
